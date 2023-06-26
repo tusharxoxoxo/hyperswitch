@@ -251,7 +251,7 @@ impl TryFrom<&types::PaymentsAuthorizeRouterData> for BluesnapPaymentsRequest {
                             wallet_type: BluesnapWalletTypes::ApplePay,
                             encoded_payment_token: consts::BASE64_ENGINE.encode(apple_pay_object),
                         }),
-                        None,
+                        get_card_holder_info(item)?,
                     ))
                 }
                 _ => Err(errors::ConnectorError::NotImplemented(
