@@ -10,7 +10,10 @@ use masking::ExposeInterface;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    connector::utils::{self, AddressDetailsData, PaymentsAuthorizeRequestData, RouterData},
+    connector::utils::{
+        self, AddressDetailsData, ApplePay, CardData, PaymentsAuthorizeRequestData,
+        PaymentsCompleteAuthorizeRequestData, RouterData,
+    },
     consts,
     core::errors,
     pii::Secret,
@@ -167,7 +170,7 @@ impl TryFrom<&types::PaymentsAuthorizeRouterData> for BluesnapPaymentsRequest {
                     expiration_year: ccard.card_exp_year.clone(),
                     security_code: ccard.card_cvc,
                 }),
-                get_card_holder_info(item)?,
+                get_card_holder_info(item.get_billing_address()?, item.request.get_email()?)?,
             )),
             api::PaymentMethodData::Wallet(wallet_data) => match wallet_data {
                 api_models::payments::WalletData::GooglePay(payment_method_data) => {
@@ -251,7 +254,10 @@ impl TryFrom<&types::PaymentsAuthorizeRouterData> for BluesnapPaymentsRequest {
                             wallet_type: BluesnapWalletTypes::ApplePay,
                             encoded_payment_token: consts::BASE64_ENGINE.encode(apple_pay_object),
                         }),
-                        get_card_holder_info(item)?,
+                        get_card_holder_info(
+                            item.get_billing_address()?,
+                            item.request.get_email()?,
+                        )?,
                     ))
                 }
                 _ => Err(errors::ConnectorError::NotImplemented(
@@ -391,9 +397,9 @@ impl TryFrom<&types::PaymentsCompleteAuthorizeRouterData> for BluesnapPaymentsRe
             item.request.payment_method_data.clone()
         {
             PaymentMethodDetails::CreditCard(Card {
-                card_number: ccard.card_number,
+                card_number: ccard.card_number.clone(),
                 expiration_month: ccard.card_exp_month.clone(),
-                expiration_year: ccard.card_exp_year.clone(),
+                expiration_year: ccard.get_expiry_year_4_digit(),
                 security_code: ccard.card_cvc,
             })
         } else {
@@ -417,7 +423,10 @@ impl TryFrom<&types::PaymentsCompleteAuthorizeRouterData> for BluesnapPaymentsRe
             transaction_fraud_info: Some(TransactionFraudInfo {
                 fraud_session_id: item.payment_id.clone(),
             }),
-            card_holder_info: None,
+            card_holder_info: get_card_holder_info(
+                item.get_billing_address()?,
+                item.request.get_email()?,
+            )?,
         })
     }
 }
@@ -790,12 +799,12 @@ pub enum BluesnapErrors {
 }
 
 fn get_card_holder_info(
-    item: &types::PaymentsAuthorizeRouterData,
+    address: &api::AddressDetails,
+    email: Email,
 ) -> CustomResult<Option<BluesnapCardHolderInfo>, errors::ConnectorError> {
-    let address = item.get_billing_address()?;
     Ok(Some(BluesnapCardHolderInfo {
         first_name: address.get_first_name()?.clone(),
         last_name: address.get_last_name()?.clone(),
-        email: item.request.get_email()?,
+        email,
     }))
 }
