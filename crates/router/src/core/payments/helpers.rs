@@ -1365,7 +1365,7 @@ pub(crate) fn validate_payment_method_fields_present(
     req: &api::PaymentsRequest,
 ) -> RouterResult<()> {
     utils::when(
-        req.payment_method.is_none() && req.payment_method_data.is_some(),
+        req.payment_method.is_some() != req.payment_method_data.is_some(),
         || {
             Err(errors::ApiErrorResponse::MissingRequiredField {
                 field_name: "payment_method",
@@ -1380,6 +1380,68 @@ pub(crate) fn validate_payment_method_fields_present(
         || {
             Err(errors::ApiErrorResponse::MissingRequiredField {
                 field_name: "payment_method_data",
+            })
+        },
+    )?;
+
+    utils::when(
+        !matches!(
+            req.payment_method,
+            Some(api_enums::PaymentMethod::Card) | None
+        ) && (req.payment_method_type.is_none()),
+        || {
+            Err(errors::ApiErrorResponse::MissingRequiredField {
+                field_name: "payment_method_type",
+            })
+        },
+    )?;
+
+    let payment_method: Option<api_enums::PaymentMethod> =
+        (req.payment_method_type).map(ForeignInto::foreign_into);
+
+    utils::when(
+        req.payment_method.is_some()
+            && req.payment_method_type.is_some()
+            && (req.payment_method != payment_method),
+        || {
+            Err(errors::ApiErrorResponse::InvalidRequestData {
+                message: ("payment_method_type is not matching with the specified payment_method"
+                    .to_string()),
+            })
+        },
+    )?;
+
+    utils::when(
+        !matches!(
+            req.payment_method
+                .as_ref()
+                .zip(req.payment_method_data.as_ref()),
+            Some(
+                (
+                    api_enums::PaymentMethod::Card,
+                    api::PaymentMethodData::Card(..)
+                ) | (
+                    api_enums::PaymentMethod::Wallet,
+                    api::PaymentMethodData::Wallet(..)
+                ) | (
+                    api_enums::PaymentMethod::PayLater,
+                    api::PaymentMethodData::PayLater(..)
+                ) | (
+                    api_enums::PaymentMethod::BankRedirect,
+                    api::PaymentMethodData::BankRedirect(..)
+                ) | (
+                    api_enums::PaymentMethod::BankDebit,
+                    api::PaymentMethodData::BankDebit(..)
+                ) | (
+                    api_enums::PaymentMethod::Crypto,
+                    api::PaymentMethodData::Crypto(..)
+                )
+            ) | None
+        ),
+        || {
+            Err(errors::ApiErrorResponse::InvalidRequestData {
+                message: "payment_method_data doesn't correspond to the specified payment_method"
+                    .to_string(),
             })
         },
     )?;
