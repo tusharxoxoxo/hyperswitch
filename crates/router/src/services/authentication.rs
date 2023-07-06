@@ -444,7 +444,18 @@ pub async fn is_ephemeral_auth<A: AppStateInfo + Sync>(
 }
 
 pub fn is_jwt_auth(headers: &HeaderMap) -> bool {
-    headers.get(crate::headers::AUTHORIZATION).is_some()
+    let cookie_header = headers.get("cookie").get_required_value("cookie");
+
+    if let Ok(cookies) = cookie_header {
+        if let Ok(cookies_string) = cookies.to_str() {
+            return cookies_string
+                .split("; ")
+                .find_map(|x| x.strip_prefix("token="))
+                .is_some();
+        };
+        return false;
+    };
+    false
 }
 
 static JWT_SECRET: tokio::sync::OnceCell<StrongSecret<String>> = tokio::sync::OnceCell::const_new();
@@ -504,18 +515,18 @@ pub fn get_api_key(headers: &HeaderMap) -> RouterResult<&str> {
 
 pub fn get_jwt(headers: &HeaderMap) -> RouterResult<&str> {
     headers
-        .get(crate::headers::AUTHORIZATION)
-        .get_required_value(crate::headers::AUTHORIZATION)?
+        .get("cookie")
+        .get_required_value("cookie")?
         .to_str()
         .into_report()
-        .change_context(errors::ApiErrorResponse::InternalServerError)
-        .attach_printable("Failed to convert JWT token to string")
+        .change_context(errors::ApiErrorResponse::InternalServerError)?
+        .split("; ")
+        .find_map(|x| x.strip_prefix("token="))
+        .ok_or_else(|| errors::ApiErrorResponse::InternalServerError.into())
 }
 
 pub fn strip_jwt_token(token: &str) -> RouterResult<&str> {
-    token
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| errors::ApiErrorResponse::InvalidJwtToken.into())
+    Ok(token)
 }
 
 pub fn auth_type<'a, T, A>(
