@@ -256,8 +256,20 @@ pub async fn add_card_hs(
     customer_id: String,
     merchant_account: &domain::MerchantAccount,
 ) -> errors::CustomResult<(api::PaymentMethodResponse, bool), errors::VaultError> {
-    let store_card_payload =
-        call_to_card_hs(state, &card, None, &customer_id, merchant_account).await?;
+    let payload = payment_methods::StoreLockerReq::LockerCard(payment_methods::StoreCardReq {
+        merchant_id: &merchant_account.merchant_id,
+        merchant_customer_id: customer_id.to_owned(),
+        card: payment_methods::Card {
+            card_number: card.card_number.to_owned(),
+            name_on_card: card.card_holder_name.to_owned(),
+            card_exp_month: card.card_exp_month.to_owned(),
+            card_exp_year: card.card_exp_year.to_owned(),
+            card_brand: None,
+            card_isin: None,
+            nick_name: card.nick_name.to_owned().map(masking::Secret::expose),
+        },
+    });
+    let store_card_payload = call_to_locker_hs(state, &payload, &customer_id).await?;
 
     let payment_method_resp = payment_methods::mk_add_card_response_hs(
         card,
@@ -326,32 +338,19 @@ pub async fn get_payment_method_from_hs_locker<'a>(
 }
 
 #[instrument(skip_all)]
-pub async fn call_to_card_hs(
+pub async fn call_to_locker_hs<'a>(
     state: &routes::AppState,
-    card: &api::CardDetail,
-    enc_value: Option<&str>,
+    payload: &payment_methods::StoreLockerReq<'a>,
     customer_id: &str,
-    merchant_account: &domain::MerchantAccount,
 ) -> errors::CustomResult<payment_methods::StoreCardRespPayload, errors::VaultError> {
     let locker = &state.conf.locker;
     #[cfg(not(feature = "kms"))]
     let jwekey = &state.conf.jwekey;
     #[cfg(feature = "kms")]
     let jwekey = &state.kms_secrets;
-
     let db = &*state.store;
-    let merchant_id = &merchant_account.merchant_id;
-
     let stored_card_response = if !locker.mock_locker {
-        let request = payment_methods::mk_add_card_request_hs(
-            jwekey,
-            locker,
-            card,
-            enc_value,
-            customer_id,
-            merchant_id,
-        )
-        .await?;
+        let request = payment_methods::mk_add_locker_request_hs(jwekey, locker, payload).await?;
         let response = services::call_connector_api(state, request)
             .await
             .change_context(errors::VaultError::SaveCardFailed);
@@ -370,7 +369,7 @@ pub async fn call_to_card_hs(
         stored_card_resp
     } else {
         let card_id = generate_id(consts::ID_LENGTH, "card");
-        mock_add_card_hs(db, &card_id, card, None, enc_value, None, Some(customer_id)).await?
+        mock_call_to_locker_hs(db, &card_id, payload, None, None, Some(customer_id)).await?
     };
 
     let stored_card = stored_card_response
@@ -494,31 +493,49 @@ pub async fn delete_card_from_hs_locker<'a>(
 }
 
 ///Mock api for local testing
-#[instrument(skip_all)]
-pub async fn mock_add_card_hs(
+pub async fn mock_call_to_locker_hs<'a>(
     db: &dyn db::StorageInterface,
     card_id: &str,
-    card: &api::CardDetail,
+    payload: &payment_methods::StoreLockerReq<'a>,
     card_cvc: Option<String>,
-    enc_val: Option<&str>,
     payment_method_id: Option<String>,
     customer_id: Option<&str>,
 ) -> errors::CustomResult<payment_methods::StoreCardResp, errors::VaultError> {
-    let locker_mock_up = storage::LockerMockUpNew {
-        card_id: card_id.to_string(),
-        external_id: uuid::Uuid::new_v4().to_string(),
-        card_fingerprint: uuid::Uuid::new_v4().to_string(),
-        card_global_fingerprint: uuid::Uuid::new_v4().to_string(),
-        merchant_id: "mm01".to_string(),
-        card_number: card.card_number.peek().to_string(),
-        card_exp_year: card.card_exp_year.peek().to_string(),
-        card_exp_month: card.card_exp_month.peek().to_string(),
-        card_cvc,
-        payment_method_id,
-        customer_id: customer_id.map(str::to_string),
-        name_on_card: card.card_holder_name.to_owned().expose_option(),
-        nickname: card.nick_name.to_owned().map(masking::Secret::expose),
-        enc_card_data: enc_val.map(|e| e.to_string()),
+    let locker_mock_up = match payload {
+        payment_methods::StoreLockerReq::LockerCard(store_card_req) => storage::LockerMockUpNew {
+            card_id: card_id.to_string(),
+            external_id: uuid::Uuid::new_v4().to_string(),
+            card_fingerprint: uuid::Uuid::new_v4().to_string(),
+            card_global_fingerprint: uuid::Uuid::new_v4().to_string(),
+            merchant_id: store_card_req.merchant_id.to_string(),
+            card_number: store_card_req.card.card_number.peek().to_string(),
+            card_exp_year: store_card_req.card.card_exp_year.peek().to_string(),
+            card_exp_month: store_card_req.card.card_exp_month.peek().to_string(),
+            card_cvc,
+            payment_method_id,
+            customer_id: customer_id.map(str::to_string),
+            name_on_card: store_card_req.card.name_on_card.to_owned().expose_option(),
+            nickname: store_card_req.card.nick_name.to_owned(),
+            enc_card_data: None,
+        },
+        payment_methods::StoreLockerReq::LockerGeneric(store_generic_req) => {
+            storage::LockerMockUpNew {
+                card_id: card_id.to_string(),
+                external_id: uuid::Uuid::new_v4().to_string(),
+                card_fingerprint: uuid::Uuid::new_v4().to_string(),
+                card_global_fingerprint: uuid::Uuid::new_v4().to_string(),
+                merchant_id: store_generic_req.merchant_id.to_string(),
+                card_number: "4111111111111111".to_string(),
+                card_exp_year: "2099".to_string(),
+                card_exp_month: "12".to_string(),
+                card_cvc,
+                payment_method_id,
+                customer_id: customer_id.map(str::to_string),
+                name_on_card: None,
+                nickname: None,
+                enc_card_data: Some(store_generic_req.enc_card_data.to_owned()),
+            }
+        }
     };
 
     let response = db
